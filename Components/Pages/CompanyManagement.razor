@@ -1,0 +1,463 @@
+@page "/"
+@page "/crm"
+@rendermode InteractiveServer
+
+@using CrmDb.Models
+@using CrmDb.Services
+@using Microsoft.EntityFrameworkCore
+
+@inject CrmDbContext DbContext
+@inject WebSiteScraper ScraperService
+
+<div class="container-fluid mt-3">
+    <h2 class="fw-bold text-primary">📊 Müşteri Adayı Takip (CRM) Paneli</h2>
+    <p class="text-muted">Satış ekibi için puanlanmış firma listesi, web tarama destekli bilgi kartları, filtreleme ve aktivite/not takip arayüzü.</p>
+
+    <!-- 🔍 ARAMA VE FİLTRELEME ÇUBUĞU -->
+    <div class="card p-3 mb-4 shadow-sm bg-light border-0">
+        <div class="row g-3 align-items-center">
+            <!-- Arama Kutusu -->
+            <div class="col-md-3">
+                <input type="text" class="form-control" placeholder="🔍 Unvan, Şehir veya Sektör ara..." 
+                       @bind="searchTerm" @bind:event="oninput" @onkeyup="ApplyFilters" />
+            </div>
+
+            <!-- Şehir Filtresi -->
+            <div class="col-md-3">
+                <select class="form-select" @bind="selectedSehir" @bind:after="ApplyFilters">
+                    <option value="">-- Tüm Şehirler --</option>
+                    @foreach (var sehir in cities)
+                    {
+                        <option value="@sehir">@sehir</option>
+                    }
+                </select>
+            </div>
+
+            <!-- Sektör Filtresi -->
+            <div class="col-md-2">
+                <select class="form-select" @bind="selectedSektor" @bind:after="ApplyFilters">
+                    <option value="">-- Tüm Sektörler --</option>
+                    @foreach (var sek in sektorler)
+                    {
+                        <option value="@sek">@sek</option>
+                    }
+                </select>
+            </div>
+
+            <!-- Durum Filtresi -->
+            <div class="col-md-2">
+                <select class="form-select" @bind="selectedDurum" @bind:after="ApplyFilters">
+                    <option value="">-- Tüm Durumlar --</option>
+                    <option value="Yeni">Yeni</option>
+                    <option value="İletişime Geçildi">İletişime Geçildi</option>
+                    <option value="Görüşme Planlandı">Görüşme Planlandı</option>
+                    <option value="Teklif Verildi">Teklif Verildi</option>
+                    <option value="Kapandı">Kapandı</option>
+                    <option value="İlgilenmiyor">İlgilenmiyor</option>
+                </select>
+            </div>
+
+            <!-- Temizle Butonu -->
+            <div class="col-md-2 text-end">
+                <button class="btn btn-outline-secondary w-100" @onclick="ResetFilters">Filtreleri Sıfırla</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 📋 FİRMA LİSTESİ TABLOSU -->
+    <div class="table-responsive shadow-sm rounded">
+        <table class="table table-hover align-middle mb-0 bg-white">
+            <thead class="table-dark">
+                <tr>
+                    <th>Skor (Öncelik)</th>
+                    <th>Firma Unvanı</th>
+                    <th>Şehir</th>
+                    <th>Sektör</th>
+                    <th>Durum (Değiştirilebilir)</th>
+                    <th class="text-center">Firma Bilgi Kartı</th>
+                    <th class="text-center">İşlemler</th>
+                </tr>
+            </thead>
+            <tbody>
+                @if (filteredCompanies == null || !filteredCompanies.Any())
+                {
+                    <tr>
+                        <td colspan="7" class="text-center py-4 text-muted">Arama kriterlerine uygun firma bulunamadı.</td>
+                    </tr>
+                }
+                else
+                {
+                    @foreach (var company in filteredCompanies)
+                    {
+                        <tr>
+                            <td>
+                                <span class="badge bg-@(company.Skor >= 30 ? "danger" : "secondary") fs-6">
+                                    🔥 @company.Skor Puan
+                                </span>
+                            </td>
+                            <td><strong>@company.UnvanResmi</strong></td>
+                            <td>@company.Sehir</td>
+                            <td><span class="badge bg-info text-dark border">@(string.IsNullOrEmpty(company.SektorKodu) ? "Genel" : company.SektorKodu)</span></td>
+                            
+                            <!-- 🔄 DURUM DEĞİŞTİRME DROPDOWN -->
+                            <td style="width: 180px;">
+                                <select class="form-select form-select-sm fw-bold border-primary" 
+                                        value="@company.Durum" 
+                                        @onchange="(e) => UpdateCompanyStatus(company, e.Value?.ToString())">
+                                    <option value="Yeni">Yeni</option>
+                                    <option value="İletişime Geçildi">İletişime Geçildi</option>
+                                    <option value="Görüşme Planlandı">Görüşme Planlandı</option>
+                                    <option value="Teklif Verildi">Teklif Verildi</option>
+                                    <option value="Kapandı">Kapandı</option>
+                                    <option value="İlgilenmiyor">İlgilenmiyor</option>
+                                </select>
+                            </td>
+
+                            <!-- 📇 BİLGİ KARTI POP-UP BUTONU -->
+                            <td class="text-center">
+                                <button class="btn btn-sm btn-outline-info" @onclick="() => OpenInfoModal(company)">
+                                    📇 Bilgi Kartı
+                                </button>
+                            </td>
+
+                            <!-- 📝 DETAY & NOT EKLE BUTONU -->
+                            <td class="text-center">
+                                <button class="btn btn-sm btn-primary" @onclick="() => OpenDetailModal(company)">
+                                    📝 Detay & Notlar
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ========================================== -->
+<!-- 📇 1. POP-UP: FİRMA BİLGİ KARTI & WEB SCRAPER MODALI -->
+<!-- ========================================== -->
+@if (selectedCompanyForCard != null)
+{
+    <div class="modal fade show d-block" tabindex="-1" style="background-color: rgba(0, 0, 0, 0.55); backdrop-filter: blur(2px);">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content shadow-lg border-0 rounded-3">
+                <div class="modal-header bg-dark text-white border-0 py-3">
+                    <h5 class="modal-title fs-6 fw-bold mb-0">
+                        🏢 @selectedCompanyForCard.UnvanResmi
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" @onclick="CloseInfoModal"></button>
+                </div>
+                <div class="modal-body p-4">
+                    <!-- Logo ve Hızlı Bilgi Bloğu -->
+                    <div class="d-flex align-items-center gap-3 mb-3 p-3 bg-light rounded-3 border">
+                        <div class="flex-shrink-0">
+                            @if (!string.IsNullOrEmpty(selectedCompanyForCard.LogoUrl))
+                            {
+                                <img src="@selectedCompanyForCard.LogoUrl" alt="Logo" 
+                                     class="rounded bg-white p-1 border shadow-sm" 
+                                     style="width: 85px; height: 60px; object-fit: contain;" />
+                            }
+                            else
+                            {
+                                <div class="rounded bg-white p-2 border text-center text-muted d-flex align-items-center justify-content-center shadow-sm" 
+                                     style="width: 85px; height: 60px; font-size: 11px;">
+                                    Logo Yok
+                                </div>
+                            }
+                        </div>
+                        <div class="flex-grow-1">
+                            <span class="badge bg-primary mb-1">@(string.IsNullOrEmpty(selectedCompanyForCard.SektorKodu) ? "Genel Sanayi" : selectedCompanyForCard.SektorKodu)</span>
+                            <div class="small text-muted">
+                                <strong>Şehir:</strong> @selectedCompanyForCard.Sehir
+                            </div>
+                            <div class="small text-truncate" style="max-width: 250px;">
+                                <strong>Web:</strong> 
+                                @if (!string.IsNullOrEmpty(selectedCompanyForCard.WebSitesi))
+                                {
+                                    <a href="@selectedCompanyForCard.WebSitesi" target="_blank" class="text-decoration-none">
+                                        @selectedCompanyForCard.WebSitesi
+                                    </a>
+                                }
+                                else
+                                {
+                                    <span class="text-muted">Bulunamadı</span>
+                                }
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Kurumsal Özet / Hakkımızda Alanı -->
+                    <div class="mb-2">
+                        <label class="form-label fw-bold text-secondary small mb-1">Kurumsal Tanıtım / Hakkımızda Özeti</label>
+                        <div class="p-3 bg-white border rounded-3 text-muted small" style="min-height: 90px; max-height: 180px; overflow-y: auto; line-height: 1.5;">
+                            @if (isScraping)
+                            {
+                                <div class="text-center py-3 text-primary">
+                                    <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                                    Web sitesi ve alt sayfalar taranıyor...
+                                </div>
+                            }
+                            else if (string.IsNullOrWhiteSpace(selectedCompanyForCard.BilgiKarti))
+                            {
+                                <div class="text-center py-3 text-muted fst-italic">
+                                    Henüz bu firma için site taraması yapılmadı.
+                                </div>
+                            }
+                            else
+                            {
+                                @selectedCompanyForCard.BilgiKarti
+                            }
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer bg-light border-0 py-2">
+                    <button class="btn btn-sm btn-success d-flex align-items-center gap-1" 
+                            @onclick="() => ScrapeSelectedCompany(selectedCompanyForCard)"
+                            disabled="@(isScraping || string.IsNullOrWhiteSpace(selectedCompanyForCard.WebSitesi))">
+                        @if (isScraping)
+                        {
+                            <span class="spinner-border spinner-border-sm"></span>
+                            <span>Taranıyor...</span>
+                        }
+                        else
+                        {
+                            <span>🌐 Siteden Çek / Güncelle</span>
+                        }
+                    </button>
+                    <button type="button" class="btn btn-sm btn-secondary" @onclick="CloseInfoModal">Kapat</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- ========================================== -->
+<!-- 📝 2. POP-UP: FİRMA DETAY VE NOT EKLEME MODALI -->
+<!-- ========================================== -->
+@if (selectedCompany != null)
+{
+    <div class="modal fade show d-block" tabindex="-1" style="background-color: rgba(0,0,0,0.55); backdrop-filter: blur(2px);">
+        <div class="modal-dialog modal-lg modal-dialog-centered">
+            <div class="modal-content shadow-lg border-0 rounded-3">
+                <div class="modal-header bg-primary text-white border-0 py-3">
+                    <h5 class="modal-title fs-6 fw-bold mb-0">🏢 @selectedCompany.UnvanResmi - Aktivite ve Not Geçmişi</h5>
+                    <button type="button" class="btn-close btn-close-white" @onclick="CloseDetailModal"></button>
+                </div>
+                <div class="modal-body p-4">
+                    <!-- Firma Genel Bilgileri Özeti -->
+                    <div class="row g-2 mb-3 bg-light p-3 rounded border">
+                        <div class="col-md-6"><strong>Şehir:</strong> @selectedCompany.Sehir</div>
+                        <div class="col-md-6"><strong>Mevcut Skor:</strong> 🔥 @selectedCompany.Skor</div>
+                        <div class="col-md-6"><strong>Web Sitesi:</strong> <a href="@selectedCompany.WebSitesi" target="_blank">@selectedCompany.WebSitesi</a></div>
+                        <div class="col-md-6"><strong>Durum:</strong> <span class="badge bg-info text-dark">@selectedCompany.Durum</span></div>
+                    </div>
+
+                    <!-- Yeni Not / Aktivite Ekleme Formu -->
+                    <h6 class="fw-bold text-dark mb-2">➕ Yeni Not / Aktivite Ekle</h6>
+                    <div class="row g-2 mb-3">
+                        <div class="col-md-4">
+                            <select class="form-select form-select-sm" @bind="newActivityTip">
+                                <option value="Arama">Arama Yapıldı</option>
+                                <option value="E-posta">E-posta Gönderildi</option>
+                                <option value="Ziyaret">Yüz Yüze Ziyaret</option>
+                                <option value="Not">Genel Not</option>
+                            </select>
+                        </div>
+                        <div class="col-md-8">
+                            <input type="text" class="form-control form-control-sm" placeholder="Aktivite notunuzu yazın..." @bind="newActivityIcerik" />
+                        </div>
+                        <div class="col-12 text-end">
+                            <button class="btn btn-sm btn-success" @onclick="AddActivityNote">💾 Notu Kaydet</button>
+                        </div>
+                    </div>
+
+                    <hr />
+
+                    <!-- Geçmiş Notlar / Aktiviteler -->
+                    <h6 class="fw-bold text-dark mb-2">📜 Geçmiş Aktiviteler ve Notlar</h6>
+                    <div style="max-height: 200px; overflow-y: auto;">
+                        @if (companyActivities == null || !companyActivities.Any())
+                        {
+                            <p class="text-muted small mb-0">Henüz eklenmiş bir not veya aktivite yok.</p>
+                        }
+                        else
+                        {
+                            <ul class="list-group list-group-flush border rounded">
+                                @foreach (var act in companyActivities)
+                                {
+                                    <li class="list-group-item d-flex justify-content-between align-items-start">
+                                        <div class="ms-2 me-auto">
+                                            <div class="fw-bold small text-primary">@act.Tip</div>
+                                            <small class="text-dark">@act.Icerik</small>
+                                        </div>
+                                        <span class="badge bg-secondary rounded-pill">@act.Tarih.ToString("dd.MM.yyyy HH:mm")</span>
+                                    </li>
+                                }
+                            </ul>
+                        }
+                    </div>
+                </div>
+                <div class="modal-footer bg-light border-0 py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" @onclick="CloseDetailModal">Kapat</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<Company> allCompanies = new();
+    private List<Company> filteredCompanies = new();
+    private List<string> cities = new();
+    private List<string> sektorler = new();
+
+    // Filtre Değişkenleri
+    private string searchTerm = "";
+    private string selectedSehir = "";
+    private string selectedSektor = "";
+    private string selectedDurum = "";
+
+    // 1. Bilgi Kartı Pop-up Değişkenleri
+    private Company? selectedCompanyForCard = null;
+    private bool isScraping = false;
+
+    // 2. Detay & Not Ekleme Değişkenleri
+    private Company? selectedCompany = null;
+    private List<Activity> companyActivities = new();
+    private string newActivityTip = "Arama";
+    private string newActivityIcerik = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+    }
+
+    private async Task LoadData()
+    {
+        allCompanies = await DbContext.Companies
+            .AsNoTracking()
+            .OrderByDescending(c => c.Skor)
+            .ToListAsync();
+
+        cities = allCompanies.Select(c => c.Sehir).Distinct().Where(s => !string.IsNullOrEmpty(s)).ToList()!;
+        sektorler = allCompanies.Select(c => c.SektorKodu).Distinct().Where(s => !string.IsNullOrEmpty(s)).ToList()!;
+        
+        ApplyFilters();
+    }
+
+    private void ApplyFilters()
+    {
+        filteredCompanies = allCompanies.Where(c =>
+            (string.IsNullOrEmpty(searchTerm) || 
+             c.UnvanResmi.Contains(searchTerm, StringComparison.OrdinalIgnoreCase) ||
+             (c.Sehir != null && c.Sehir.Contains(searchTerm, StringComparison.OrdinalIgnoreCase)) ||
+             (c.SektorKodu != null && c.SektorKodu.Contains(searchTerm, StringComparison.OrdinalIgnoreCase))) &&
+            (string.IsNullOrEmpty(selectedSehir) || c.Sehir == selectedSehir) &&
+            (string.IsNullOrEmpty(selectedSektor) || c.SektorKodu == selectedSektor) &&
+            (string.IsNullOrEmpty(selectedDurum) || c.Durum == selectedDurum)
+        ).ToList();
+    }
+
+    private void ResetFilters()
+    {
+        searchTerm = "";
+        selectedSehir = "";
+        selectedSektor = "";
+        selectedDurum = "";
+        ApplyFilters();
+    }
+
+    private async Task UpdateCompanyStatus(Company company, string? newStatus)
+    {
+        if (string.IsNullOrEmpty(newStatus)) return;
+
+        var dbComp = await DbContext.Companies.FindAsync(company.CompanyId);
+        if (dbComp != null)
+        {
+            dbComp.Durum = newStatus;
+            dbComp.SonGuncelleme = DateTime.Now;
+            await DbContext.SaveChangesAsync();
+        }
+
+        company.Durum = newStatus;
+    }
+
+    // --- Bilgi Kartı Pop-up İşlemleri ---
+    private void OpenInfoModal(Company company)
+    {
+        selectedCompanyForCard = company;
+    }
+
+    private void CloseInfoModal()
+    {
+        selectedCompanyForCard = null;
+        isScraping = false;
+    }
+
+    private async Task ScrapeSelectedCompany(Company company)
+    {
+        if (string.IsNullOrWhiteSpace(company.WebSitesi)) return;
+
+        isScraping = true;
+        StateHasChanged();
+
+        var scrapedData = await ScraperService.ScrapeCompanyAboutAsync(company.WebSitesi);
+
+        company.BilgiKarti = scrapedData.SummaryText;
+        company.LogoUrl = scrapedData.LogoUrl;
+
+        var dbCompany = await DbContext.Companies.FindAsync(company.CompanyId);
+        if (dbCompany != null)
+        {
+            dbCompany.BilgiKarti = scrapedData.SummaryText;
+            dbCompany.LogoUrl = scrapedData.LogoUrl;
+            await DbContext.SaveChangesAsync();
+        }
+
+        isScraping = false;
+        StateHasChanged();
+    }
+
+    // --- Detay & Aktivite Modalı İşlemleri ---
+    private async Task OpenDetailModal(Company company)
+    {
+        selectedCompany = company;
+        await LoadCompanyActivities(company.CompanyId);
+    }
+
+    private void CloseDetailModal()
+    {
+        selectedCompany = null;
+        newActivityIcerik = "";
+    }
+
+    private async Task LoadCompanyActivities(int companyId)
+    {
+        companyActivities = await DbContext.Activities
+            .AsNoTracking()
+            .Where(a => a.CompanyId == companyId)
+            .OrderByDescending(a => a.Tarih)
+            .ToListAsync();
+    }
+
+    private async Task AddActivityNote()
+    {
+        if (selectedCompany == null || string.IsNullOrWhiteSpace(newActivityIcerik)) return;
+
+        var newAct = new Activity
+        {
+            CompanyId = selectedCompany.CompanyId,
+            UserId = 1,
+            Tip = newActivityTip,
+            Icerik = newActivityIcerik,
+            Tarih = DateTime.Now
+        };
+
+        DbContext.Activities.Add(newAct);
+        await DbContext.SaveChangesAsync();
+
+        newActivityIcerik = "";
+        await LoadCompanyActivities(selectedCompany.CompanyId);
+    }
+}

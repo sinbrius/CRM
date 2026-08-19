@@ -1,0 +1,134 @@
+@page "/data-import"
+@rendermode InteractiveServer
+@using CrmDb.Models
+@using CrmDb.Services
+@using System.Text.Json
+@inject WebPageScraper Scraper
+@inject CrmDbContext DbContext
+@inject CompanyIngestionService IngestionService
+@inject IncentiveProcessorService IncentiveService
+
+<h3>Açık Veri Kaynağı İçe Aktarma (Mimarsinan OSB)</h3>
+
+<div class="card p-3 my-3">
+    <h5>1. Veri Kaynağı: Mimarsinan OSB Firma Rehberi</h5>
+    <p>Aşağıdaki butona basarak canlı siteden verileri çekebilir ve SourceRecords tablosuna aktarabilirsiniz.</p>
+    
+    <button class="btn btn-primary" @onclick="StartImport" disabled="@isImporting">
+        @if (isImporting)
+        {
+            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+            <span> Veriler Çekiliyor...</span>
+        }
+        else
+        {
+            <span>Verileri Çek ve Kaydet</span>
+        }
+    </button>
+</div>
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="alert alert-info">
+        @statusMessage
+    </div>
+}
+<div class="card p-3 my-3">
+    <h5>Ham verileri şirket tablosuna aktar</h5>
+    <p>Aşağıdaki butona basarak CompanyTable güncelleyebilirsiniz.</p>
+    
+    <button class="btn btn-success ms-2" @onclick="ProcessData">
+    Ham Verileri Müşteri Tablosuna Aktar (Transform & Load)
+    </button>
+</div>
+@if (!string.IsNullOrEmpty(statusMessage2))
+{
+    <p class="mt-2 alert alert-info">@statusMessage2</p>
+}
+<div class="card p-3 my-3 bg-light border-primary">
+    <h5>📄 Sanayi Bakanlığı Yatırım Teşvik Verisi İçe Aktar</h5>
+    <p>Bakanlıktan indirilen (.csv) teşvik dosyasını yükleyin. Kayseri yatırımları süzülüp firma skorları güncellenir.</p>
+
+    <InputFile OnChange="LoadIncentiveCsv" class="form-control mb-2" accept=".csv" />
+    
+    @if (!string.IsNullOrEmpty(statusMessage3))
+    {
+        <div class="alert alert-info mt-2">@statusMessage3</div>
+    }
+</div>
+
+@code {
+    private bool isImporting = false;
+
+    private string statusMessage2 = "";
+    private string statusMessage3 = "";
+    private string statusMessage = string.Empty;
+
+    private async Task ProcessData()
+    {
+        statusMessage2 = "Veriler işleniyor ve tekilleştiriliyor...";
+        int result = await IngestionService.ProcessRawRecordsAsync();
+        statusMessage2 = $"{result} adet ham veri başarıyla işlendi ve Müşteriler (Companies) tablosuna aktarıldı!";
+    }
+
+    private async Task LoadIncentiveCsv(InputFileChangeEventArgs e)
+    {
+        statusMessage3 = "CSV Dosyası işleniyor ve Kayseri yatırımları süzülüyor...";
+
+        try
+        {
+            var file = e.File;
+            using var stream = file.OpenReadStream(maxAllowedSize: 1024 * 1024 * 15); // Max 15MB
+
+            statusMessage3 = await IncentiveService.ProcessIncentiveCsvAsync(stream);
+        }
+        catch (Exception ex)
+        {
+            statusMessage3 = $"Hata oluştu: {ex.Message}";
+        }
+    }
+
+    private async Task StartImport()
+{
+    isImporting = true;
+    statusMessage = "Mimarsinan OSB verileri çekiliyor, lütfen bekleyin...";
+    StateHasChanged();
+
+    try
+    {
+        // Scraper'ı çağırıyoruz (Arka planda dondurmadan çalışır)
+        var firmalar = await Scraper.ScrapeCompaniesAsync();
+
+        if (firmalar != null && firmalar.Count > 0)
+        {
+            foreach (var firma in firmalar)
+            {
+                var sourceRecord = new SourceRecord
+                {
+                    DataSourceId = 1,
+                    HamVeriJson = JsonSerializer.Serialize(firma),
+                    EslestirmeDurumu = "Ham Kayıt",
+                    IceAktarmaTarihi = DateTime.Now
+                };
+
+                DbContext.SourceRecords.Add(sourceRecord);
+            }
+
+            await DbContext.SaveChangesAsync();
+            statusMessage = $"Başarılı! Toplam {firmalar.Count} adet ham firma kaydı veritabanına eklendi.";
+        }
+        else
+        {
+            statusMessage = "Siteden veri çekilemedi. Lütfen bağlantıyı kontrol edin.";
+        }
+    }
+    catch (Exception ex)
+    {
+        statusMessage = $"Hata oluştu: {ex.Message}";
+    }
+    finally
+    {
+        isImporting = false;
+        StateHasChanged();
+    }
+}
+}
